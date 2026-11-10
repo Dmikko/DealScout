@@ -1,0 +1,185 @@
+{
+  "name": "DealScout – Produktnormalisering",
+  "active": false,
+  "nodes": [
+    {
+      "id": "demo-1",
+      "name": "Manual trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "demo-2",
+      "name": "Postgres: Get Pending Aliases",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n    pa.id AS alias_id,\n    pa.chain_id,\n    pa.source_name,\n    pa.source_description,\n\n    go.price_dkk,\n    go.quantity_from,\n    go.quantity_to,\n    go.original_unit,\n    go.pieces_from,\n    go.pieces_to,\n    go.normalized_unit\n\nFROM product_aliases pa\n\nLEFT JOIN LATERAL (\n    SELECT\n        go.price_dkk,\n        go.quantity_from,\n        go.quantity_to,\n        go.original_unit,\n        go.pieces_from,\n        go.pieces_to,\n        go.normalized_unit\n    FROM offer_product_matches opm\n    JOIN grocery_offers go\n        ON go.id = opm.offer_id\n    WHERE opm.alias_id = pa.id\n    ORDER BY go.last_seen_at DESC\n    LIMIT 1\n) go ON true\n\nWHERE pa.normalization_status = 'pending'\nORDER BY pa.id\nLIMIT 10;",
+        "options": {}
+      }
+    },
+    {
+      "id": "demo-3",
+      "name": "Prepare Ollama Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const products = $input.all().map(item => ({\n  aliasId: Number(item.json.alias_id),\n\n  productName:\n    item.json.source_name,\n\n  description:\n    item.json.source_description,\n\n  quantityFrom:\n    item.json.quantity_from,\n\n  quantityTo:\n    item.json.quantity_to,\n\n  unit:\n    item.json.original_unit,\n\n  piecesFrom:\n    item.json.pieces_from,\n\n  piecesTo:\n    item.json.pieces_to\n}));\n\nconst schema = {\n  type: \"object\",\n\n  properties: {\n    products: {\n      type: \"array\",\n\n      items: {\n        type: \"object\",\n\n        properties: {\n          aliasId: {\n            type: \"integer\"\n          },\n\n          canonicalName: {\n            type: \"string\"\n          },\n\n          brand: {\n            type: [\n              \"string\",\n              \"null\"\n            ]\n          },\n\n          productType: {\n            type: \"string\"\n          },\n\n          category: {\n            type: \"string\"\n          },\n\n          subcategory: {\n            type: [\n              \"string\",\n              \"null\"\n            ]\n          },\n\n          comparisonGroup: {\n            type: [\n              \"string\",\n              \"null\"\n            ]\n          },\n\n          quantity: {\n            type: [\n              \"number\",\n              \"null\"\n            ]\n          },\n\n          unit: {\n            type: [\n              \"string\",\n              \"null\"\n            ]\n          },\n\n          multiProduct: {\n            type: \"boolean\"\n          },\n\n          confidence: {\n            type: \"number\",\n            minimum: 0,\n            maximum: 1\n          }\n        },\n\n        required: [\n          \"aliasId\",\n          \"canonicalName\",\n          \"brand\",\n          \"productType\",\n          \"category\",\n          \"subcategory\",\n          \"comparisonGroup\",\n          \"quantity\",\n          \"unit\",\n          \"multiProduct\",\n          \"confidence\"\n        ],\n\n        additionalProperties: false\n      }\n    }\n  },\n\n  required: [\n    \"products\"\n  ],\n\n  additionalProperties: false\n};\n\nconst systemPrompt = `\nDu normaliserer danske dagligvaretilbud til stabile produktgrupper.\n\nMålet er korrekt prissammenligning på tværs af Netto, REMA 1000\nog 365discount.\n\nProduktgrupper må derfor hverken være for brede eller unødigt\nspecifikke.\n\nGENERELLE REGLER\n\n- Bevar aliasId uændret.\n- Returnér præcis ét resultat per inputprodukt.\n- Bevar inputrækkefølgen.\n- Opfind aldrig mærke, mængde, type eller egenskaber.\n- Brug konsekvent danske betegnelser.\n- Brug små bogstaver i productType, category, subcategory og\n  comparisonGroup.\n- Butiksnavn, pris, kampagnetekst og pakkestørrelse må ikke indgå\n  i comparisonGroup.\n- Mærket må kun indgå i brand og canonicalName.\n- Mærket må normalt ikke indgå i comparisonGroup.\n- Vurder altid hovedproduktet ud fra produktnavn og hele\n  beskrivelsens sammenhæng.\n\nVIGTIGE SPROGREGLER\n\n- Læs hele produktordet præcist.\n- \"blommer\" er frugt og må aldrig fortolkes som \"blomster\".\n- productType skal så vidt muligt bevare den konkrete generiske\n  varebetegnelse fra produktnavnet.\n- En ingrediens, smag eller marinade er ikke nødvendigvis\n  produktets hovedtype.\n- En høj confidence kræver, at den konkrete varetype er entydigt\n  identificeret.\n- Brug aldrig automatisk 0.95 eller 1.00 på alle produkter.\n\nHOVEDPRODUKT FREM FOR SMAG ELLER INGREDIENS\n\ncategory skal følge hovedproduktet.\n\nSmag, marinade og ingredienser må ikke alene bestemme kategorien.\n\nEksempler:\n\n- kyllingebryst med citron er \"kød og fjerkræ\"\n- sirup med mango er \"kolonial\"\n- yoghurt med jordbær er \"mejeri og køl\"\n- sodavand med citrus er \"drikkevarer\"\n- chips med paprika er \"slik og snacks\"\n- vaskemiddel med blomsterduft er\n  \"husholdning og rengøring\"\n\nFLERE PRODUKTER\n\n- Kalveschnitzler og højrebsbøffer er forskellige\n  kødudskæringer.\n- Smør og smørbar er forskellige funktionelle varetyper.\n- Tun og makrel er forskellige fisketyper.\n- Hvis et tilbud kombinerer forskellige udskæringer, arter eller\n  funktionelle varetyper med \"eller\", skal multiProduct være true\n  og comparisonGroup være null.\n- Varianter kan kun samles, hvis de reelt bruges og\n  prissammenlignes på samme måde.\n\nOrdet \"eller\" betyder ikke automatisk multiProduct.\n\nFølgende kan normalt være varianter af samme funktionelle varetype:\n\n- forskellige smagsvarianter af samme yoghurt\n- forskellige dufte af samme vaskemiddel\n- forskellige varianter af samme chips\n- rød, hvid eller rosévin i samme tilbud\n- forskellige sodavand af samme type\n\nHvis tilbuddet blander forskellige funktionelle varetyper, skal:\n\n- multiProduct være true\n- comparisonGroup være null\n\nCATEGORY\n\ncategory skal være præcis én af følgende værdier:\n\n- frugt og grønt\n- kød og fjerkræ\n- fisk og skaldyr\n- mejeri og køl\n- brød og bager\n- kolonial\n- frost\n- drikkevarer\n- slik og snacks\n- husholdning og rengøring\n- personlig pleje\n- baby\n- kæledyr\n- blomster og planter\n- andet\n\nBrug aldrig brede eller alternative kategorinavne som:\n\n- mad\n- mad og drikke\n- dagligvarer\n- fødevarer\n- diverse\n- snacks og slik\n- snik og snacks\n- skole og børn\n\nFASTE KATEGORIREGLER\n\nBrug følgende regler, når productType er entydig:\n\nDrikkevarer:\n\n- vin\n- øl\n- sodavand\n- iskaffe\n- instant kaffe\n- energidrik\n\nMejeri og køl:\n\n- yoghurt\n- skyr\n- mælk\n- skummetmælk\n- kærnemælk\n- creme fraiche\n- flødeost\n- ost\n- skiveost\n- skæreost\n- færdiglavede flødekartofler\n\nBrød og bager:\n\n- brød\n- rugbrød\n- boller\n- kager fra brødhylden\n\nFrost:\n\n- spiseis\n- produkter der udtrykkeligt beskrives som dybfrost\n- frossen pizza\n\nSlik og snacks:\n\n- chips\n- proteinbar\n- slik\n- chokolade\n- snackprodukter\n\nKød og fjerkræ:\n\n- pålæg af kød\n- leverpostej\n- kylling\n- marineret kyllingebryst\n- hakket kød\n\nFrugt og grønt:\n\n- frisk frugt\n- friske grøntsager\n- blommer\n- kartofler\n- salatgrønt\n\nKolonial:\n\n- pasta\n- ris\n- konservesmajs\n- olivenolie\n- kokosmælk\n- havregryn\n- morgenmadsprodukter\n- dressing\n- sirup\n- konserves\n- tørvarer\n\nHusholdning og rengøring:\n\n- opvasketabs\n- vaskemiddel\n- rengøringsmiddel\n- køkkenrulle\n- toiletpapir\n\nAndet:\n\n- strømper\n- airfryer\n- bademåtte\n- lampe\n- opbevaringskurve\n- blyantsæt\n- puslespilsbog\n- øvrige nonfood-produkter uden en mere præcis kategori\n\nKONTEKSTAFHÆNGIGE PRODUKTER\n\nPizza:\n\n- Hvis teksten siger \"dybfrost\", \"dyb-frost\", \"frossen\" eller\n  \"frostvare\", skal category være \"frost\".\n- Hvis teksten siger \"findes på køl\", \"på køl\" eller \"kølevare\",\n  skal category være \"mejeri og køl\".\n- Gæt ikke opbevaringsformen, hvis teksten ikke angiver den.\n\nMajs:\n\n- Majs på dåse, i multipak eller anden konserves skal være\n  \"kolonial\".\n- Friske majskolber skal være \"frugt og grønt\".\n- Frosne majs skal være \"frost\".\n\nPRODUCT TYPE\n\nproductType er den konkrete generiske varetype.\n\nGode eksempler:\n\n- salatblanding\n- flydende vaskemiddel\n- vaskepulver\n- opvasketabs\n- hakket oksekød\n- letmælk\n- pålægssalat\n- tun i dåse\n- marineret kyllingebryst\n\nDårlige eksempler:\n\n- salat\n- kød\n- rengøring\n- drikke\n- produkt\n- varer\n- diverse\n\nHvis vaskemiddel sælges i ml, cl, dl eller liter, skal productType\nnormalt være \"flydende vaskemiddel\".\n\nHvis vaskemiddel sælges efter vægt, skal productType afhænge af\nproduktteksten, eksempelvis \"vaskepulver\".\n\nSAMMENLIGNINGSGRUPPER\n\ncomparisonGroup skal beskrive den mindste stabile gruppe af produkter,\nder reelt kan sammenlignes på enhedspris.\n\nFølgende er altid for brede og må aldrig bruges som\ncomparisonGroup:\n\n- mad\n- mad og drikke\n- fødevarer\n- dagligvarer\n- produkt\n- varer\n- diverse\n- kød\n- fisk\n- salat\n- rengøring\n- drikke\n- mejeri\n\n\"vaskemiddel\" er også for bredt, hvis typen kan bestemmes mere\npræcist.\n\nBrug i stedet konkrete grupper som:\n\n- blommer\n- hakket oksekød 8-12%\n- flydende vaskemiddel\n- vaskepulver\n- opvasketabs\n- salatblade og salatblandinger\n- yoghurt\n- skyr\n- skiveost\n- chips\n- pizza\n- majs\n\nBevar egenskaber, når de reelt påvirker sammenligneligheden:\n\n- hakket oksekød 8-12%\n- hakket oksekød 14-18%\n- letmælk\n- sødmælk\n- flydende vaskemiddel\n- vaskepulver\n- cola med sukker\n- cola uden sukker\n- toiletpapir 3-lags\n\nUndgå at gøre comparisonGroup mærkespecifik.\n\nEksempler:\n\n- \"Pringles chips\" skal normalt have comparisonGroup \"chips\".\n- \"KiMs chips\" skal normalt have comparisonGroup \"chips\".\n- \"Coop yoghurt\" skal normalt have comparisonGroup \"yoghurt\".\n- \"Harvest Best majs\" skal normalt have comparisonGroup \"majs\".\n\nMÆNGDE OG SAMMENLIGNINGSENHED\n\n- Ved vaskemiddel skal antal vaske foretrækkes frem for antal\n  flasker, når antal vaske fremgår.\n- \"35 vaske, 1 stk.\" skal give quantity 35 og unit \"vask\".\n- \"20-22 vaske\" skal give quantity null og unit \"vask\".\n- Ved et vægtinterval skal quantity være null, men unit skal stadig\n  være \"g\" eller \"kg\", hvis enheden fremgår.\n- \"125-200 g\" skal derfor give quantity null og unit \"g\".\n- Ved et volumeninterval skal quantity være null, men unit skal\n  stadig bevares.\n- Bevar den observerede enhed.\n- Opfind ikke en mængde eller konvertering.\n\nEKSEMPLER\n\n\"Ready To Serve salatblanding eller krøllet salatmix\":\n\n- productType: \"salatblanding\"\n- category: \"frugt og grønt\"\n- subcategory: \"salatblade og salatblandinger\"\n- comparisonGroup: \"ready-to-serve salatblanding\"\n- multiProduct: false\n\n\"Flydende vaskemiddel, 20-22 vaske\":\n\n- productType: \"flydende vaskemiddel\"\n- category: \"husholdning og rengøring\"\n- subcategory: \"tøjvask\"\n- comparisonGroup: \"flydende vaskemiddel\"\n- quantity: null\n- unit: \"vask\"\n- multiProduct: false\n\n\"Lurpak smør eller smørbar\":\n\n- multiProduct: true\n- comparisonGroup: null\n\n\"Glyngøre tun eller Sæby chilensk makrel\":\n\n- multiProduct: true\n- comparisonGroup: null\n\nMÆNGDE\n\n- Hvis mængden er et interval, skal quantity være null.\n- unit må kun udfyldes, hvis enheden fremgår.\n- Bevar den observerede enhed.\n- Opfind ikke en konvertering.\n\nCONFIDENCE\n\n- 0.90-1.00: Produkt, type og sammenligningsgruppe er entydige.\n- 0.75-0.89: Produktet er sandsynligt identificeret, men en\n  væsentlig detalje er uklar.\n- Under 0.75: Produktet kræver manuel kontrol.\n- Brug ikke høj confidence, hvis category eller comparisonGroup\n  bygger på et gæt.\n`;\n\nreturn [\n  {\n    json: {\n      productCount:\n        products.length,\n\n      expectedAliasIds:\n        products.map(product => product.aliasId),\n\n      sourceProducts:\n        products,\n\n      ollamaRequest: {\n        model: \"qwen3:8b\",\n        stream: false,\n        think: false,\n        format: schema,\n\n        options: {\n          temperature: 0,\n          num_predict: 4096\n        },\n\n        messages: [\n          {\n            role: \"system\",\n            content: systemPrompt\n          },\n          {\n            role: \"user\",\n            content:\n              \"Normalisér disse produkter:\\n\" +\n              JSON.stringify(products)\n          }\n        ]\n      }\n    }\n  }\n];"
+      }
+    },
+    {
+      "id": "demo-4",
+      "name": "Ollama Structured Output",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama.example.invalid:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.ollamaRequest }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 300000
+        }
+      }
+    },
+    {
+      "id": "demo-5",
+      "name": "Parse Ollama Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\n\nconst content = response.message?.content;\n\nif (!content || typeof content !== \"string\") {\n  throw new Error(\n    `Ollama returnerede intet message.content: ${JSON.stringify(response)}`\n  );\n}\n\nlet parsed;\n\ntry {\n  parsed = JSON.parse(content);\n} catch (error) {\n  throw new Error(\n    `Ollama returnerede ugyldig JSON: ${content}`\n  );\n}\n\nif (!Array.isArray(parsed.products)) {\n  throw new Error(\n    `Svaret mangler products-array: ${content}`\n  );\n}\n\nconst expectedCount =\n  $(\"Prepare Ollama Batch\").first().json.productCount;\n\nconst expectedIds =\n  $(\"Prepare Ollama Batch\").first().json.expectedAliasIds;\n\nif (parsed.products.length !== expectedCount) {\n  throw new Error(\n    `Forventede ${expectedCount} produkter, men fik ${parsed.products.length}`\n  );\n}\n\nconst returnedIds =\n  parsed.products.map(product => Number(product.aliasId));\n\nconst missingIds =\n  expectedIds.filter(id => !returnedIds.includes(Number(id)));\n\nif (missingIds.length > 0) {\n  throw new Error(\n    `Ollama mangler alias-ID'er: ${missingIds.join(\", \")}`\n  );\n}\n\nconst sourceProducts =\n  $(\"Prepare Ollama Batch\").first().json.sourceProducts;\n\nconst sourceByAliasId = new Map(\n  sourceProducts.map(product => [\n    Number(product.aliasId),\n    product\n  ])\n);\n\nreturn parsed.products.map(product => {\n  const aliasId = Number(product.aliasId);\n  const source = sourceByAliasId.get(aliasId);\n\n  if (!source) {\n    throw new Error(\n      `Mangler originalt produkt for alias ${aliasId}`\n    );\n  }\n\n  return {\n    json: {\n      ...product,\n      sourceName: source.productName,\n      sourceDescription: source.description,\n      sourceQuantityFrom: source.quantityFrom,\n      sourceQuantityTo: source.quantityTo,\n      sourceUnit: source.unit,\n      sourcePiecesFrom: source.piecesFrom,\n      sourcePiecesTo: source.piecesTo\n    }\n  };\n});"
+      }
+    },
+    {
+      "id": "demo-6",
+      "name": "Validate Normalization",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const product = $json;\n\n// ---------- Hjælpefunktioner ----------\n\nfunction cleanText(value) {\n  if (\n    value === null ||\n    value === undefined\n  ) {\n    return null;\n  }\n\n  const cleaned = String(value)\n    .trim()\n    .replace(/\\s+/g, \" \");\n\n  return cleaned.length > 0\n    ? cleaned\n    : null;\n}\n\nfunction cleanLowercase(value) {\n  const cleaned = cleanText(value);\n\n  return cleaned\n    ? cleaned.toLocaleLowerCase(\"da-DK\")\n    : null;\n}\n\nfunction normalizeUnit(value) {\n  const unit = cleanLowercase(value);\n\n  if (!unit) {\n    return null;\n  }\n\n  const unitMap = {\n    pcs: \"stk\",\n    pc: \"stk\",\n    piece: \"stk\",\n    pieces: \"stk\",\n    styk: \"stk\",\n    stk: \"stk\",\n\n    gram: \"g\",\n    grams: \"g\",\n    g: \"g\",\n\n    kilogram: \"kg\",\n    kilograms: \"kg\",\n    kilo: \"kg\",\n    kg: \"kg\",\n\n    milliliter: \"ml\",\n    milliliters: \"ml\",\n    ml: \"ml\",\n\n    centiliter: \"cl\",\n    centiliters: \"cl\",\n    cl: \"cl\",\n\n    deciliter: \"dl\",\n    deciliters: \"dl\",\n    dl: \"dl\",\n\n    liter: \"l\",\n    liters: \"l\",\n    litre: \"l\",\n    litres: \"l\",\n    l: \"l\",\n\n    wash: \"vask\",\n    washes: \"vask\",\n    vaske: \"vask\",\n    vask: \"vask\"\n  };\n\n  return unitMap[unit] ?? unit;\n}\n\nfunction normalizeForComparison(value) {\n  return String(value ?? \"\")\n    .toLocaleLowerCase(\"da-DK\")\n    .normalize(\"NFKD\")\n    .replace(/\\p{M}/gu, \"\")\n    .replace(/[^a-zæøå0-9]/g, \"\");\n}\n\nfunction containsDanishTerm(text, terms) {\n  const normalizedText =\n    String(text ?? \"\")\n      .toLocaleLowerCase(\"da-DK\");\n\n  return terms.some(term => {\n    const escapedTerm = term.replace(\n      /[.*+?^${}()|[\\]\\\\]/g,\n      \"\\\\$&\"\n    );\n\n    const pattern = new RegExp(\n      `(^|[^a-zæøå0-9])${escapedTerm}(?=$|[^a-zæøå0-9])`,\n      \"iu\"\n    );\n\n    return pattern.test(normalizedText);\n  });\n}\n\n// ---------- Grundfelter ----------\n\nconst aliasId =\n  Number(product.aliasId);\n\nconst confidence =\n  Number(product.confidence);\n\nif (\n  !Number.isInteger(aliasId) ||\n  aliasId <= 0\n) {\n  throw new Error(\n    `Ugyldigt aliasId: ${product.aliasId}`\n  );\n}\n\nif (\n  !Number.isFinite(confidence) ||\n  confidence < 0 ||\n  confidence > 1\n) {\n  throw new Error(\n    `Ugyldig confidence for alias ${aliasId}: ${product.confidence}`\n  );\n}\n\n// ---------- Originale kildedata ----------\n\nconst sourceName =\n  cleanText(product.sourceName) ?? \"\";\n\nconst sourceDescription =\n  cleanText(product.sourceDescription) ?? \"\";\n\nconst sourceText =\n  `${sourceName} ${sourceDescription}`.trim();\n\nconst sourceQuantityFrom =\n  product.sourceQuantityFrom !== null &&\n  product.sourceQuantityFrom !== undefined\n    ? Number(product.sourceQuantityFrom)\n    : null;\n\nconst sourceQuantityTo =\n  product.sourceQuantityTo !== null &&\n  product.sourceQuantityTo !== undefined\n    ? Number(product.sourceQuantityTo)\n    : null;\n\nconst sourceUnit =\n  normalizeUnit(product.sourceUnit);\n\n// ---------- Modelresultat ----------\n\nconst canonicalName =\n  cleanText(product.canonicalName);\n\nlet brand =\n  cleanText(product.brand);\n\nlet productType =\n  cleanLowercase(product.productType);\n\nlet category =\n  cleanLowercase(product.category);\n\nconst subcategory =\n  cleanLowercase(product.subcategory);\n\nlet unit =\n  normalizeUnit(product.unit);\n\nlet comparisonGroup =\n  cleanLowercase(product.comparisonGroup);\n\nconst multiProduct =\n  product.multiProduct === true;\n\n// ---------- Mængde ----------\n\nlet quantity = null;\n\nif (\n  product.quantity !== null &&\n  product.quantity !== undefined\n) {\n  const parsedQuantity =\n    Number(product.quantity);\n\n  if (\n    Number.isFinite(parsedQuantity) &&\n    parsedQuantity > 0\n  ) {\n    quantity = parsedQuantity;\n  }\n}\n\nconst sourceHasQuantityRange =\n  Number.isFinite(sourceQuantityFrom) &&\n  Number.isFinite(sourceQuantityTo) &&\n  sourceQuantityFrom > 0 &&\n  sourceQuantityTo > 0 &&\n  sourceQuantityFrom !== sourceQuantityTo;\n\nif (sourceHasQuantityRange) {\n  quantity = null;\n}\n\n// ---------- Obligatoriske felter ----------\n\nif (!canonicalName) {\n  throw new Error(\n    `Alias ${aliasId} mangler canonicalName`\n  );\n}\n\nif (!productType) {\n  throw new Error(\n    `Alias ${aliasId} mangler productType`\n  );\n}\n\nif (!category) {\n  throw new Error(\n    `Alias ${aliasId} mangler category`\n  );\n}\n\nif (multiProduct) {\n  comparisonGroup = null;\n}\n\n// ---------- Automatiske korrektioner ----------\n\nconst automaticCorrections = [];\n\nfunction applyCategory(\n  expectedCategory,\n  reason\n) {\n  if (\n    expectedCategory &&\n    category !== expectedCategory\n  ) {\n    automaticCorrections.push(\n      `Kategori ændret fra \"${category}\" til \"${expectedCategory}\": ${reason}`\n    );\n\n    category = expectedCategory;\n  }\n}\n\nfunction applyComparisonGroup(\n  expectedGroup,\n  reason\n) {\n  if (\n    !multiProduct &&\n    expectedGroup &&\n    comparisonGroup !== expectedGroup\n  ) {\n    automaticCorrections.push(\n      `Comparison group ændret fra \"${comparisonGroup}\" til \"${expectedGroup}\": ${reason}`\n    );\n\n    comparisonGroup = expectedGroup;\n  }\n}\n\n/*\n * Faste regler bruges kun for produkttyper,\n * der entydigt tilhører én kategori.\n */\nconst categoryByProductType = new Map([\n  [\"vin\", \"drikkevarer\"],\n  [\"øl\", \"drikkevarer\"],\n  [\"sodavand\", \"drikkevarer\"],\n  [\"iskaffe\", \"drikkevarer\"],\n  [\"instant kaffe\", \"drikkevarer\"],\n  [\"energidrik\", \"drikkevarer\"],\n  [\"kondi booster\", \"drikkevarer\"],\n\n  [\"yoghurt\", \"mejeri og køl\"],\n  [\"skyr\", \"mejeri og køl\"],\n  [\"mælk\", \"mejeri og køl\"],\n  [\"skummetmælk\", \"mejeri og køl\"],\n  [\"letmælk\", \"mejeri og køl\"],\n  [\"sødmælk\", \"mejeri og køl\"],\n  [\"kærnemælk\", \"mejeri og køl\"],\n  [\"økologisk kærnemælk\", \"mejeri og køl\"],\n  [\"creme fraiche\", \"mejeri og køl\"],\n  [\"flødeost\", \"mejeri og køl\"],\n  [\"ost\", \"mejeri og køl\"],\n  [\"skiveost\", \"mejeri og køl\"],\n  [\"skæreost\", \"mejeri og køl\"],\n  [\"flødekartofler\", \"mejeri og køl\"],\n\n  [\"brød\", \"brød og bager\"],\n  [\"rugbrød\", \"brød og bager\"],\n  [\"boller\", \"brød og bager\"],\n\n  [\"is\", \"frost\"],\n\n  [\"chips\", \"slik og snacks\"],\n  [\"proteinbar\", \"slik og snacks\"],\n  [\"slik\", \"slik og snacks\"],\n  [\"chokolade\", \"slik og snacks\"],\n  [\"kugler\", \"slik og snacks\"],\n\n  [\"pålæg\", \"kød og fjerkræ\"],\n  [\"leverpostej\", \"kød og fjerkræ\"],\n  [\"dansk kylling\", \"kød og fjerkræ\"],\n  [\"kylling\", \"kød og fjerkræ\"],\n  [\"kyllingebryst\", \"kød og fjerkræ\"],\n  [\n    \"marineret kyllingebryst\",\n    \"kød og fjerkræ\"\n  ],\n  [\"hakket oksekød\", \"kød og fjerkræ\"],\n  [\"hakket grisekød\", \"kød og fjerkræ\"],\n\n  [\"blommer\", \"frugt og grønt\"],\n  [\"kartofler\", \"frugt og grønt\"],\n\n  [\"pasta\", \"kolonial\"],\n  [\"ris\", \"kolonial\"],\n  [\"majs\", \"kolonial\"],\n  [\"olivenolie\", \"kolonial\"],\n  [\"kokosmælk\", \"kolonial\"],\n  [\"havregryn\", \"kolonial\"],\n  [\"fras\", \"kolonial\"],\n  [\"fastfood dressing\", \"kolonial\"],\n  [\"dressing\", \"kolonial\"],\n  [\"survarer\", \"kolonial\"],\n  [\"topping\", \"kolonial\"],\n  [\"sirup\", \"kolonial\"],\n\n  [\n    \"opvasketabs\",\n    \"husholdning og rengøring\"\n  ],\n  [\n    \"flydende vaskemiddel\",\n    \"husholdning og rengøring\"\n  ],\n  [\n    \"vaskepulver\",\n    \"husholdning og rengøring\"\n  ],\n\n  [\"strømper\", \"andet\"],\n  [\"airfryer\", \"andet\"],\n  [\"bademåtte\", \"andet\"],\n  [\"lampe\", \"andet\"],\n  [\"opbevaringskurve\", \"andet\"],\n  [\"blyantsæt\", \"andet\"],\n  [\"puslespilsbog\", \"andet\"]\n]);\n\nconst deterministicCategory =\n  categoryByProductType.get(productType);\n\nif (deterministicCategory) {\n  applyCategory(\n    deterministicCategory,\n    `fast regel for productType \"${productType}\"`\n  );\n}\n\n/*\n * Nogle kendte typer skal have en stabil,\n * ikke-mærkespecifik comparison group.\n */\nconst comparisonGroupByProductType = new Map([\n  [\"blommer\", \"blommer\"],\n  [\"chips\", \"chips\"],\n  [\"yoghurt\", \"yoghurt\"],\n  [\"skyr\", \"skyr\"],\n  [\"pizza\", \"pizza\"],\n  [\"majs\", \"majs\"],\n  [\"flødekartofler\", \"flødekartofler\"],\n  [\"opvasketabs\", \"opvasketabs\"]\n]);\n\nconst deterministicComparisonGroup =\n  comparisonGroupByProductType.get(productType);\n\nif (deterministicComparisonGroup) {\n  applyComparisonGroup(\n    deterministicComparisonGroup,\n    `fast regel for productType \"${productType}\"`\n  );\n}\n\n// Pizza afhænger af opbevaringsformen.\n\nif (productType === \"pizza\") {\n  if (\n    /\\b(?:dyb[\\s-]?frost|frossen|frostvare)\\b/iu.test(\n      sourceText\n    )\n  ) {\n    applyCategory(\n      \"frost\",\n      \"produktteksten angiver frost\"\n    );\n  } else if (\n    /\\b(?:findes på køl|på køl|kølevare)\\b/iu.test(\n      sourceText\n    )\n  ) {\n    applyCategory(\n      \"mejeri og køl\",\n      \"produktteksten angiver køl\"\n    );\n  }\n}\n\n/*\n * Generisk vaskemiddel, der sælges i volumen,\n * behandles som flydende vaskemiddel.\n */\nconst sourceMentionsLiquidVolume =\n  /\\b\\d+(?:[.,]\\d+)?\\s*(?:ml|cl|dl|l|liter)\\b/iu\n    .test(sourceText);\n\nif (\n  !multiProduct &&\n  productType === \"vaskemiddel\" &&\n  sourceMentionsLiquidVolume\n) {\n  automaticCorrections.push(\n    'productType ændret fra \"vaskemiddel\" til \"flydende vaskemiddel\"'\n  );\n\n  productType =\n    \"flydende vaskemiddel\";\n\n  applyCategory(\n    \"husholdning og rengøring\",\n    \"flydende vaskemiddel\"\n  );\n\n  applyComparisonGroup(\n    \"flydende vaskemiddel\",\n    \"vaskemiddel i volumen\"\n  );\n}\n\n// ---------- Tilladte kategorier ----------\n\nconst allowedCategories = new Set([\n  \"frugt og grønt\",\n  \"kød og fjerkræ\",\n  \"fisk og skaldyr\",\n  \"mejeri og køl\",\n  \"brød og bager\",\n  \"kolonial\",\n  \"frost\",\n  \"drikkevarer\",\n  \"slik og snacks\",\n  \"husholdning og rengøring\",\n  \"personlig pleje\",\n  \"baby\",\n  \"kæledyr\",\n  \"blomster og planter\",\n  \"andet\"\n]);\n\n// ---------- For brede betegnelser ----------\n\nconst forbiddenProductTypes = new Set([\n  \"mad\",\n  \"mad og drikke\",\n  \"fødevarer\",\n  \"dagligvarer\",\n  \"produkt\",\n  \"varer\",\n  \"diverse\",\n  \"kød\",\n  \"fisk\",\n  \"salat\",\n  \"rengøring\",\n  \"vaskemiddel\",\n  \"drikke\",\n  \"mejeri\"\n]);\n\nconst forbiddenComparisonGroups = new Set([\n  \"mad\",\n  \"mad og drikke\",\n  \"fødevarer\",\n  \"dagligvarer\",\n  \"produkt\",\n  \"varer\",\n  \"diverse\",\n  \"kød\",\n  \"fisk\",\n  \"salat\",\n  \"rengøring\",\n  \"vaskemiddel\",\n  \"drikke\",\n  \"mejeri\"\n]);\n\n// ---------- Kendte semantiske grupper ----------\n\nconst fruitTerms = [\n  \"blomme\",\n  \"blommer\",\n  \"æble\",\n  \"æbler\",\n  \"pære\",\n  \"pærer\",\n  \"banan\",\n  \"bananer\",\n  \"appelsin\",\n  \"appelsiner\",\n  \"citron\",\n  \"citroner\",\n  \"lime\",\n  \"kiwi\",\n  \"mango\",\n  \"melon\",\n  \"meloner\",\n  \"drue\",\n  \"druer\",\n  \"fersken\",\n  \"ferskner\",\n  \"nektarin\",\n  \"nektariner\",\n  \"jordbær\",\n  \"hindbær\",\n  \"blåbær\"\n];\n\nconst flowerTerms = [\n  \"blomst\",\n  \"blomster\",\n  \"buket\",\n  \"buketter\",\n  \"rose\",\n  \"roser\",\n  \"tulipan\",\n  \"tulipaner\",\n  \"plante\",\n  \"planter\"\n];\n\n// ---------- Valideringsårsager ----------\n\nconst validationReasons = [];\n\nconst validCategory =\n  allowedCategories.has(category);\n\nif (!validCategory) {\n  validationReasons.push(\n    `Ikke-godkendt kategori: ${category}`\n  );\n}\n\nconst validProductType =\n  !forbiddenProductTypes.has(productType);\n\nif (!validProductType) {\n  validationReasons.push(\n    `For bred productType: ${productType}`\n  );\n}\n\nconst validComparisonGroup =\n  comparisonGroup !== null &&\n  !forbiddenComparisonGroups.has(\n    comparisonGroup\n  );\n\nif (\n  !multiProduct &&\n  !validComparisonGroup\n) {\n  validationReasons.push(\n    comparisonGroup === null\n      ? \"Mangler comparisonGroup\"\n      : `For bred comparisonGroup: ${comparisonGroup}`\n  );\n}\n\nif (confidence < 0.85) {\n  validationReasons.push(\n    `Lav confidence: ${confidence}`\n  );\n}\n\n// ---------- Kontrol af mærke ----------\n\nconst normalizedBrand =\n  normalizeForComparison(brand);\n\nconst normalizedSource =\n  normalizeForComparison(sourceText);\n\nconst invalidBrandValues = new Set([\n  \"ubekendt\",\n  \"ukendt\",\n  \"varierende\",\n  \"varieret\",\n  \"andet\",\n  \"ingen\",\n  \"udenmærke\"\n]);\n\nconst brandIsUnsupported =\n  normalizedBrand.length > 0 &&\n  (\n    invalidBrandValues.has(normalizedBrand) ||\n    (\n      normalizedBrand.length > 2 &&\n      !normalizedSource.includes(\n        normalizedBrand\n      )\n    )\n  );\n\nif (brandIsUnsupported) {\n  brand = null;\n}\n\n// ---------- Semantiske kategorikontroller ----------\n\n/*\n * Kun hovedproduktets identitet kontrolleres.\n * Smagsord og ingredienser i beskrivelsen må ikke\n * ændre produktets hovedkategori.\n */\n/*\n * productType repræsenterer hovedproduktet.\n * canonicalName kan indeholde smag, marinade og ingredienser\n * som citron, mango eller jordbær.\n */\nconst productIdentityText =\n  productType ?? \"\";\n\nconst identityContainsFruit =\n  containsDanishTerm(\n    productIdentityText,\n    fruitTerms\n  );\n\nconst identityContainsFlowers =\n  containsDanishTerm(\n    productIdentityText,\n    flowerTerms\n  );\n\nif (\n  identityContainsFruit &&\n  !identityContainsFlowers &&\n  category !== \"frugt og grønt\"\n) {\n  validationReasons.push(\n    `Frugt er placeret i forkert kategori: ${category}`\n  );\n}\n\nif (\n  identityContainsFlowers &&\n  !identityContainsFruit &&\n  category !== \"blomster og planter\"\n) {\n  validationReasons.push(\n    `Blomster eller planter er placeret i forkert kategori: ${category}`\n  );\n}\n\nif (\n  containsDanishTerm(\n    productIdentityText,\n    [\"blomme\", \"blommer\"]\n  ) &&\n  containsDanishTerm(\n    productType,\n    [\"blomst\", \"blomster\"]\n  )\n) {\n  validationReasons.push(\n    \"Blommer er fejlagtigt klassificeret som blomster\"\n  );\n}\n\n// ---------- Kontrol af mængde og enhed ----------\n\nif (\n  quantity !== null &&\n  unit === null\n) {\n  validationReasons.push(\n    \"Har quantity, men mangler unit\"\n  );\n}\n\nif (\n  sourceHasQuantityRange &&\n  sourceUnit !== null &&\n  unit === null\n) {\n  validationReasons.push(\n    `Kilden har enheden ${sourceUnit}, men modellen har fjernet den`\n  );\n}\n\nconst sourceMentionsWashes =\n  /\\b\\d+(?:[.,]\\d+)?(?:\\s*(?:-|–|—|til)\\s*\\d+(?:[.,]\\d+)?)?\\s*vaske?\\b/iu\n    .test(sourceText);\n\nif (\n  sourceMentionsWashes &&\n  productType.includes(\"vaskemiddel\")\n) {\n  if (unit !== \"vask\") {\n    validationReasons.push(\n      \"Vaskemiddel med oplyst antal vaske bruger ikke enheden vask\"\n    );\n  }\n\n  /*\n   * Ved et vaskeinterval må aliaset ikke gemme\n   * én enkelt quantity.\n   */\n  const washRange =\n    /\\b\\d+(?:[.,]\\d+)?\\s*(?:-|–|—|til)\\s*\\d+(?:[.,]\\d+)?\\s*vaske?\\b/iu\n      .test(sourceText);\n\n  if (washRange) {\n    quantity = null;\n  }\n}\n\n// ---------- Status ----------\n\nlet normalizationStatus;\n\nif (multiProduct) {\n  normalizationStatus =\n    \"multi_product\";\n} else if (\n  confidence >= 0.85 &&\n  validCategory &&\n  validProductType &&\n  validComparisonGroup &&\n  validationReasons.length === 0\n) {\n  normalizationStatus =\n    \"matched\";\n} else {\n  normalizationStatus =\n    \"review\";\n}\n\n// ---------- Output ----------\n\nreturn {\n  json: {\n    aliasId,\n    sourceName,\n    sourceDescription,\n\n    canonicalName,\n    brand,\n    productType,\n    category,\n    subcategory,\n    comparisonGroup,\n    quantity,\n    unit,\n    multiProduct,\n    confidence,\n\n    normalizationStatus,\n    validationReasons,\n    automaticCorrections,\n\n    agentResult: {\n      ...product,\n\n      sourceName,\n      sourceDescription,\n\n      canonicalName,\n      brand,\n      productType,\n      category,\n      subcategory,\n      comparisonGroup,\n      quantity,\n      unit,\n      multiProduct,\n      confidence,\n\n      normalizationStatus,\n      validationReasons,\n      automaticCorrections\n    }\n  }\n};"
+      }
+    },
+    {
+      "id": "demo-7",
+      "name": "Update Product Alias",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE product_aliases\nSET\n    normalization_status = $2,\n    match_confidence = $3,\n    extracted_brand = $4,\n    extracted_type = $5,\n    extracted_category = $6,\n    extracted_quantity = $7,\n    extracted_unit = $8,\n    comparison_group = $9,\n    agent_result = $10::jsonb\nWHERE id = $1\nRETURNING\n    id,\n    source_name,\n    normalization_status,\n    match_confidence,\n    extracted_brand,\n    extracted_type,\n    extracted_category,\n    extracted_quantity,\n    extracted_unit,\n    comparison_group;",
+        "options": {
+          "queryReplacement": "={{ [   $json.aliasId,   $json.normalizationStatus,   $json.confidence,   $json.brand,   $json.productType,   $json.category,   $json.quantity,   $json.unit,   $json.comparisonGroup,   JSON.stringify($json.agentResult) ] }}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual trigger": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Get Pending Aliases",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Get Pending Aliases": {
+      "main": [
+        [
+          {
+            "node": "Prepare Ollama Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Ollama Batch": {
+      "main": [
+        [
+          {
+            "node": "Ollama Structured Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Structured Output": {
+      "main": [
+        [
+          {
+            "node": "Parse Ollama Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Ollama Response": {
+      "main": [
+        [
+          {
+            "node": "Validate Normalization",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Normalization": {
+      "main": [
+        [
+          {
+            "node": "Update Product Alias",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

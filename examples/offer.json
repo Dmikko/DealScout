@@ -1,0 +1,88 @@
+{
+  "beforeNormalization": {
+    "id": "demo-offer-01",
+    "dealer_id": "demo-netto",
+    "branding": {
+      "name": "Netto"
+    },
+    "heading": "Blommer 500 g",
+    "description": "En bakke på 500 g",
+    "pricing": {
+      "price": 15,
+      "pre_price": 20
+    },
+    "quantity": {
+      "size": {
+        "from": 500
+      },
+      "unit": {
+        "symbol": "g"
+      }
+    },
+    "run_from": "2030-01-07T00:00:00Z",
+    "run_till": "2030-01-13T23:59:59Z"
+  },
+  "afterNormalization": {
+    "aliasId": 1,
+    "canonicalName": "Blommer",
+    "brand": null,
+    "productType": "blommer",
+    "category": "frugt og grønt",
+    "subcategory": null,
+    "comparisonGroup": "blommer",
+    "quantity": 500,
+    "unit": "g",
+    "multiProduct": false,
+    "confidence": 0.97,
+    "normalizationStatus": "matched"
+  },
+  "apiResponse": {
+    "data": [
+      {
+        "offer_id": 1,
+        "external_offer_id": "demo-offer-01",
+        "chain_id": "demo-netto",
+        "chain_name": "Netto",
+        "product_name": "Blommer 500 g",
+        "description": "En bakke på 500 g",
+        "extracted_brand": null,
+        "extracted_type": "blommer",
+        "extracted_category": "frugt og grønt",
+        "comparison_group": "blommer",
+        "price_dkk": 15,
+        "advertised_before_price_dkk": 20,
+        "advertised_discount_percent": 25,
+        "quantity_from": 500,
+        "quantity_to": 500,
+        "original_unit": "g",
+        "normalized_unit": "kg",
+        "comparison_unit_price": 30,
+        "valid_from": "2030-01-07T00:00:00Z",
+        "valid_until": "2030-01-13T23:59:59Z",
+        "image_url": null,
+        "group_chain_count": null,
+        "group_offer_count": null,
+        "price_rank": null,
+        "percent_vs_group_median": null,
+        "prior_offer_period_count": 0,
+        "verified_discount_vs_history_percent": null,
+        "historical_price_assessment": "insufficient_history",
+        "assessment_confidence": "none",
+        "display_status": "unverified",
+        "status_basis": "insufficient_data"
+      }
+    ],
+    "pagination": {
+      "total": 1,
+      "limit": 50,
+      "offset": 0,
+      "hasMore": false
+    },
+    "filters": {
+      "chain": null,
+      "category": null,
+      "status": null,
+      "search": "blommer"
+    }
+  }
+}

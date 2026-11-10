@@ -1,0 +1,115 @@
+{
+  "name": "DealScout – Tilbuds-API",
+  "active": false,
+  "nodes": [
+    {
+      "id": "demo-1",
+      "name": "Webhook - Get Offers",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "path": "dealscout-demo",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "demo-2",
+      "name": "Code - Prepare API Filters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const query = $json.query ?? {};\n\nconst allowedChains = new Map([\n  [\"netto\", \"Netto\"],\n  [\"rema 1000\", \"REMA 1000\"],\n  [\"rema1000\", \"REMA 1000\"],\n  [\"365discount\", \"365discount\"],\n  [\"365\", \"365discount\"]\n]);\n\nconst allowedCategories = new Set([\n  \"frugt og grønt\",\n  \"kød og fjerkræ\",\n  \"fisk og skaldyr\",\n  \"mejeri og køl\",\n  \"brød og bager\",\n  \"kolonial\",\n  \"frost\",\n  \"drikkevarer\",\n  \"slik og snacks\",\n  \"husholdning og rengøring\",\n  \"personlig pleje\",\n  \"baby\",\n  \"kæledyr\",\n  \"blomster og planter\",\n  \"andet\"\n]);\n\nconst allowedStatuses = new Set([\n  \"exceptional\",\n  \"good\",\n  \"current_cheapest\",\n  \"normal\",\n  \"currently_comparable\",\n  \"expensive\",\n  \"unverified\"\n]);\n\nfunction cleanOptionalString(value, maxLength = 100) {\n  if (\n    value === null ||\n    value === undefined\n  ) {\n    return null;\n  }\n\n  const cleaned = String(value).trim();\n\n  if (!cleaned) {\n    return null;\n  }\n\n  return cleaned.slice(0, maxLength);\n}\n\nfunction parseInteger(value, fallback, min, max) {\n  const parsed = Number.parseInt(value, 10);\n\n  if (!Number.isFinite(parsed)) {\n    return fallback;\n  }\n\n  return Math.min(\n    Math.max(parsed, min),\n    max\n  );\n}\n\nconst rawChain =\n  cleanOptionalString(query.chain, 50)\n    ?.toLocaleLowerCase(\"da-DK\") ?? null;\n\nconst chainName =\n  rawChain\n    ? allowedChains.get(rawChain) ?? null\n    : null;\n\nif (rawChain && !chainName) {\n  throw new Error(\n    `Ukendt kæde: ${query.chain}`\n  );\n}\n\nconst category =\n  cleanOptionalString(query.category, 100)\n    ?.toLocaleLowerCase(\"da-DK\") ?? null;\n\nif (\n  category &&\n  !allowedCategories.has(category)\n) {\n  throw new Error(\n    `Ukendt kategori: ${query.category}`\n  );\n}\n\nconst status =\n  cleanOptionalString(query.status, 50)\n    ?.toLocaleLowerCase(\"da-DK\") ?? null;\n\nif (\n  status &&\n  !allowedStatuses.has(status)\n) {\n  throw new Error(\n    `Ukendt status: ${query.status}`\n  );\n}\n\nconst search =\n  cleanOptionalString(query.search, 100);\n\nconst limit =\n  parseInteger(\n    query.limit,\n    50,\n    1,\n    100\n  );\n\nconst offset =\n  parseInteger(\n    query.offset,\n    0,\n    0,\n    100000\n  );\n\nreturn {\n  json: {\n    chainName,\n    category,\n    status,\n    search,\n    limit,\n    offset\n  }\n};"
+      }
+    },
+    {
+      "id": "demo-3",
+      "name": "PostgreSQL - Read Offer Intelligence",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH filtered_offers AS (\n    SELECT\n        offer_id,\n        external_offer_id,\n\n        chain_id,\n        chain_name,\n\n        product_name,\n        description,\n        extracted_brand,\n        extracted_type,\n        extracted_category,\n        comparison_group,\n\n        price_dkk,\n        advertised_before_price_dkk,\n        advertised_discount_percent,\n\n        quantity_from,\n        quantity_to,\n        original_unit,\n        normalized_unit,\n        comparison_unit_price,\n\n        valid_from,\n        valid_until,\n        image_url,\n\n        group_chain_count,\n        group_offer_count,\n        price_rank,\n        percent_vs_group_median,\n\n        prior_offer_period_count,\n        verified_discount_vs_history_percent,\n        historical_price_assessment,\n        assessment_confidence,\n\n        display_status,\n        status_basis\n\n    FROM v_offer_intelligence\n\n    WHERE (\n        $1::text IS NULL\n        OR chain_name = $1::text\n    )\n\n    AND (\n        $2::text IS NULL\n        OR extracted_category = $2::text\n    )\n\n    AND (\n        $3::text IS NULL\n        OR display_status = $3::text\n    )\n\n    AND (\n        $4::text IS NULL\n        OR product_name ILIKE\n            '%' || $4::text || '%'\n        OR COALESCE(description, '') ILIKE\n            '%' || $4::text || '%'\n        OR COALESCE(extracted_brand, '') ILIKE\n            '%' || $4::text || '%'\n        OR COALESCE(extracted_type, '') ILIKE\n            '%' || $4::text || '%'\n    )\n),\n\npaged_offers AS (\n    SELECT *\n    FROM filtered_offers\n\n    ORDER BY\n        CASE display_status\n            WHEN 'exceptional' THEN 1\n            WHEN 'good' THEN 2\n            WHEN 'current_cheapest' THEN 3\n            WHEN 'normal' THEN 4\n            WHEN 'currently_comparable' THEN 5\n            WHEN 'expensive' THEN 6\n            ELSE 7\n        END,\n\n        percent_vs_group_median\n            ASC NULLS LAST,\n\n        valid_until ASC,\n        product_name ASC\n\n    LIMIT $5::integer\n    OFFSET $6::integer\n)\n\nSELECT jsonb_build_object(\n    'data',\n    COALESCE(\n        (\n            SELECT jsonb_agg(\n                to_jsonb(paged_offers)\n            )\n            FROM paged_offers\n        ),\n        '[]'::jsonb\n    ),\n\n    'pagination',\n    jsonb_build_object(\n        'total',\n        (\n            SELECT COUNT(*)\n            FROM filtered_offers\n        ),\n\n        'limit',\n        $5::integer,\n\n        'offset',\n        $6::integer,\n\n        'hasMore',\n        (\n            $6::integer + $5::integer\n        ) < (\n            SELECT COUNT(*)\n            FROM filtered_offers\n        )\n    ),\n\n    'filters',\n    jsonb_build_object(\n        'chain',\n        $1::text,\n\n        'category',\n        $2::text,\n\n        'status',\n        $3::text,\n\n        'search',\n        $4::text\n    )\n) AS response;",
+        "options": {
+          "queryReplacement": "={{ [\n  $json.chainName,\n  $json.category,\n  $json.status,\n  $json.search,\n  $json.limit,\n  $json.offset\n] }}"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "demo-4",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "PostgreSQL - Read Offer Intelligence": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - Get Offers": {
+      "main": [
+        [
+          {
+            "node": "Code - Prepare API Filters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Prepare API Filters": {
+      "main": [
+        [
+          {
+            "node": "PostgreSQL - Read Offer Intelligence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

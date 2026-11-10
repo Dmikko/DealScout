@@ -1,0 +1,186 @@
+{
+  "name": "DealScout – Indsamling",
+  "active": false,
+  "nodes": [
+    {
+      "id": "demo-1",
+      "name": "When clicking ‘Execute workflow’",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "demo-2",
+      "name": "Create chain items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      chain: \"Netto\",\n      dealerId: \"demo-netto\"\n    }\n  },\n  {\n    json: {\n      chain: \"REMA 1000\",\n      dealerId: \"demo-rema\"\n    }\n  },\n  {\n    json: {\n      chain: \"365discount\",\n      dealerId: \"demo-365\"\n    }\n  }\n];"
+      }
+    },
+    {
+      "id": "demo-3",
+      "name": "HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "url": "https://feed.example.invalid/offers",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "dealer_id",
+              "value": "={{$json.dealerId}}"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            },
+            {
+              "name": "offset",
+              "value": "0"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "offset",
+                    "value": "={{ $pageCount * 100 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ $response.body.length < 100 }}",
+              "limitPagesFetched": true,
+              "maxRequests": 10,
+              "requestInterval": 200
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "demo-4",
+      "name": "Code in JavaScript1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = $json;\n\nconst price = raw.pricing?.price ?? null;\nconst advertisedBeforePrice =\n  raw.pricing?.pre_price ?? null;\n\nlet quantityFrom =\n  raw.quantity?.size?.from ?? null;\n\nlet quantityTo =\n  raw.quantity?.size?.to ?? quantityFrom;\n\nlet originalUnit =\n  raw.quantity?.unit?.symbol?.toLowerCase() ?? null;\n\nconst piecesFrom =\n  raw.quantity?.pieces?.from ?? null;\n\nconst piecesTo =\n  raw.quantity?.pieces?.to ?? piecesFrom;\n\nconst productName =\n  raw.heading ??\n  raw.name ??\n  \"Unknown product\";\n\nconst description =\n  raw.description ?? null;\n\nconst searchableText = [\n  productName,\n  description\n]\n  .filter(Boolean)\n  .join(\" \")\n  .toLowerCase();\n\n/*\n * Semantiske mængder i beskrivelsen har højere prioritet\n * end API'ets generelle pakkestørrelse.\n *\n * Eksempel:\n * \"1 liter. 20-22 vaske. Pris pr. vask maks. 1,00\"\n * skal sammenlignes per vask, ikke per liter.\n */\nconst washRangeMatch = searchableText.match(\n  /(\\d+(?:[.,]\\d+)?)\\s*(?:-|–|—|til)\\s*(\\d+(?:[.,]\\d+)?)\\s*vaske?\\b/i\n);\n\nconst singleWashMatch = searchableText.match(\n  /(\\d+(?:[.,]\\d+)?)\\s*vaske?\\b/i\n);\n\nfunction parseDanishNumber(value) {\n  if (value === null || value === undefined) {\n    return null;\n  }\n\n  const parsed = Number(\n    String(value).replace(\",\", \".\")\n  );\n\n  return Number.isFinite(parsed)\n    ? parsed\n    : null;\n}\n\nif (washRangeMatch) {\n  const parsedFrom =\n    parseDanishNumber(washRangeMatch[1]);\n\n  const parsedTo =\n    parseDanishNumber(washRangeMatch[2]);\n\n  if (\n    parsedFrom !== null &&\n    parsedTo !== null &&\n    parsedFrom > 0 &&\n    parsedTo > 0\n  ) {\n    quantityFrom = Math.min(parsedFrom, parsedTo);\n    quantityTo = Math.max(parsedFrom, parsedTo);\n    originalUnit = \"vask\";\n  }\n} else if (singleWashMatch) {\n  const parsedWashes =\n    parseDanishNumber(singleWashMatch[1]);\n\n  if (\n    parsedWashes !== null &&\n    parsedWashes > 0\n  ) {\n    quantityFrom = parsedWashes;\n    quantityTo = parsedWashes;\n    originalUnit = \"vask\";\n  }\n}\n\n/*\n * Genkend antal enheder, når tilbudsteksten udtrykkeligt\n * angiver en stk-pris.\n *\n * Eksempel:\n * \"40-50 stk. Stk-pris maks. 1,73\"\n */\nconst explicitlyPricedPerPiece =\n  /\\b(?:stk\\.?\\s*-?\\s*pris|pris\\s+pr\\.?\\s*stk\\.?)\\b/iu\n    .test(searchableText);\n\nconst pieceRangeMatch = searchableText.match(\n  /(\\d+(?:[.,]\\d+)?)\\s*(?:-|–|—|til)\\s*(\\d+(?:[.,]\\d+)?)\\s*(?:stk\\.?|styk(?:ker)?)\\b/iu\n);\n\nconst singlePieceMatch = searchableText.match(\n  /(\\d+(?:[.,]\\d+)?)\\s*(?:stk\\.?|styk(?:ker)?)\\b/iu\n);\n\nif (\n  originalUnit !== \"vask\" &&\n  explicitlyPricedPerPiece\n) {\n  if (pieceRangeMatch) {\n    const parsedFrom =\n      parseDanishNumber(pieceRangeMatch[1]);\n\n    const parsedTo =\n      parseDanishNumber(pieceRangeMatch[2]);\n\n    if (\n      parsedFrom !== null &&\n      parsedTo !== null &&\n      parsedFrom > 0 &&\n      parsedTo > 0\n    ) {\n      quantityFrom =\n        Math.min(parsedFrom, parsedTo);\n\n      quantityTo =\n        Math.max(parsedFrom, parsedTo);\n\n      originalUnit = \"stk\";\n    }\n  } else if (singlePieceMatch) {\n    const parsedPieces =\n      parseDanishNumber(singlePieceMatch[1]);\n\n    if (\n      parsedPieces !== null &&\n      parsedPieces > 0\n    ) {\n      quantityFrom = parsedPieces;\n      quantityTo = parsedPieces;\n      originalUnit = \"stk\";\n    }\n  }\n}\n\n/*\n * API'ets pieces-felt er autoritativt, når varen\n * allerede er angivet med en styk-enhed.\n *\n * Eksempel:\n * size.from = 1\n * unit.symbol = \"pcs\"\n * pieces.from = 40\n * pieces.to = 50\n *\n * Resultat: 40-50 stk., ikke én pakke.\n */\nconst numericPiecesFrom =\n  piecesFrom !== null &&\n  piecesFrom !== undefined\n    ? Number(piecesFrom)\n    : null;\n\nconst numericPiecesTo =\n  piecesTo !== null &&\n  piecesTo !== undefined\n    ? Number(piecesTo)\n    : numericPiecesFrom;\n\nconst sourceUsesPieceUnit = [\n  \"pcs\",\n  \"pc\",\n  \"stk\",\n  \"st\",\n  \"styk\"\n].includes(\n  String(originalUnit ?? \"\")\n    .toLowerCase()\n);\n\nif (\n  originalUnit !== \"vask\" &&\n  sourceUsesPieceUnit &&\n  Number.isFinite(numericPiecesFrom) &&\n  numericPiecesFrom > 1\n) {\n  quantityFrom =\n    numericPiecesFrom;\n\n  quantityTo =\n    Number.isFinite(numericPiecesTo) &&\n    numericPiecesTo >= numericPiecesFrom\n      ? numericPiecesTo\n      : numericPiecesFrom;\n\n  originalUnit =\n    \"stk\";\n}\n\nfunction normalizeQuantity(value, unit) {\n  if (\n    value === null ||\n    value === undefined ||\n    !unit\n  ) {\n    return null;\n  }\n\n  const numericValue = Number(value);\n\n  if (\n    !Number.isFinite(numericValue) ||\n    numericValue <= 0\n  ) {\n    return null;\n  }\n\n  switch (unit) {\n    case \"g\":\n      return {\n        value: numericValue / 1000,\n        unit: \"kg\"\n      };\n\n    case \"kg\":\n      return {\n        value: numericValue,\n        unit: \"kg\"\n      };\n\n    case \"ml\":\n      return {\n        value: numericValue / 1000,\n        unit: \"l\"\n      };\n\n    case \"cl\":\n      return {\n        value: numericValue / 100,\n        unit: \"l\"\n      };\n\n    case \"dl\":\n      return {\n        value: numericValue / 10,\n        unit: \"l\"\n      };\n\n    case \"l\":\n    case \"liter\":\n      return {\n        value: numericValue,\n        unit: \"l\"\n      };\n\n    case \"stk\":\n    case \"st\":\n    case \"pcs\":\n    case \"vask\":\n    case \"vaske\":\n      return {\n        value: numericValue,\n        unit: \"pcs\"\n      };\n\n    default:\n      return {\n        value: numericValue,\n        unit\n      };\n  }\n}\n\nconst normalizedFrom =\n  normalizeQuantity(quantityFrom, originalUnit);\n\nconst normalizedTo =\n  normalizeQuantity(quantityTo, originalUnit);\n\nlet unitPriceWorstCase = null;\nlet unitPriceBestCase = null;\n\nlet normalizedUnit =\n  normalizedFrom?.unit ?? null;\n\nif (\n  price !== null &&\n  normalizedFrom?.value > 0\n) {\n  // Den mindste mængde giver den højeste enhedspris.\n  unitPriceWorstCase = Number(\n    (\n      Number(price) /\n      normalizedFrom.value\n    ).toFixed(4)\n  );\n\n  const bestQuantity =\n    normalizedTo?.value ??\n    normalizedFrom.value;\n\n  unitPriceBestCase = Number(\n    (\n      Number(price) /\n      bestQuantity\n    ).toFixed(4)\n  );\n} else if (\n  price !== null &&\n  piecesFrom !== null &&\n  Number(piecesFrom) > 0\n) {\n  normalizedUnit = \"pcs\";\n\n  unitPriceWorstCase = Number(\n    (\n      Number(price) /\n      Number(piecesFrom)\n    ).toFixed(4)\n  );\n\n  const bestPieces =\n    piecesTo !== null &&\n    Number(piecesTo) > 0\n      ? Number(piecesTo)\n      : Number(piecesFrom);\n\n  unitPriceBestCase = Number(\n    (\n      Number(price) /\n      bestPieces\n    ).toFixed(4)\n  );\n}\n\nconst hasQuantityRange =\n  (\n    quantityFrom !== null &&\n    quantityTo !== null &&\n    Number(quantityFrom) !== Number(quantityTo)\n  ) ||\n  (\n    piecesFrom !== null &&\n    piecesTo !== null &&\n    Number(piecesFrom) !== Number(piecesTo)\n  );\n\nreturn {\n  json: {\n    externalOfferId: raw.id,\n    chainId: raw.dealer_id,\n\n    chainName:\n      raw.branding?.name ??\n      raw.dealer?.name ??\n      \"Unknown\",\n\n    productName,\n    description,\n\n    priceDkk: price,\n    advertisedBeforePriceDkk:\n      advertisedBeforePrice,\n\n    quantityFrom,\n    quantityTo,\n    originalUnit,\n\n    piecesFrom,\n    piecesTo,\n\n    unitPriceWorstCase,\n    unitPriceBestCase,\n    normalizedUnit,\n\n    validFrom:\n      raw.run_from ?? null,\n\n    validUntil:\n      raw.run_till ?? null,\n\n    imageUrl:\n      raw.images?.view ?? null,\n\n    hasQuantityRange,\n\n    rawPayload: raw\n  }\n};"
+      }
+    },
+    {
+      "id": "demo-5",
+      "name": "Upsert Grocery Offer",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO grocery_offers (\n    external_offer_id,\n    chain_id,\n    chain_name,\n    product_name,\n    description,\n    price_dkk,\n    advertised_before_price_dkk,\n    quantity_from,\n    quantity_to,\n    original_unit,\n    pieces_from,\n    pieces_to,\n    unit_price_worst_case,\n    unit_price_best_case,\n    normalized_unit,\n    valid_from,\n    valid_until,\n    image_url,\n    has_quantity_range,\n    raw_payload\n)\nVALUES (\n    $1,\n    $2,\n    $3,\n    $4,\n    $5,\n    $6,\n    $7,\n    $8,\n    $9,\n    $10,\n    $11,\n    $12,\n    $13,\n    $14,\n    $15,\n    $16,\n    $17,\n    $18,\n    $19,\n    $20::jsonb\n)\nON CONFLICT (chain_id, external_offer_id)\nDO UPDATE SET\n    chain_name = EXCLUDED.chain_name,\n    product_name = EXCLUDED.product_name,\n    description = EXCLUDED.description,\n    price_dkk = EXCLUDED.price_dkk,\n    advertised_before_price_dkk =\n        EXCLUDED.advertised_before_price_dkk,\n    quantity_from = EXCLUDED.quantity_from,\n    quantity_to = EXCLUDED.quantity_to,\n    original_unit = EXCLUDED.original_unit,\n    pieces_from = EXCLUDED.pieces_from,\n    pieces_to = EXCLUDED.pieces_to,\n    unit_price_worst_case =\n        EXCLUDED.unit_price_worst_case,\n    unit_price_best_case =\n        EXCLUDED.unit_price_best_case,\n    normalized_unit = EXCLUDED.normalized_unit,\n    valid_from = EXCLUDED.valid_from,\n    valid_until = EXCLUDED.valid_until,\n    image_url = EXCLUDED.image_url,\n    has_quantity_range =\n        EXCLUDED.has_quantity_range,\n    raw_payload = EXCLUDED.raw_payload,\n    last_seen_at = now()\nRETURNING\n    id,\n    external_offer_id,\n    chain_name,\n    product_name,\n    price_dkk,\n    unit_price_worst_case,\n    normalized_unit,\n    valid_from,\n    valid_until,\n    first_seen_at,\n    last_seen_at;",
+        "options": {
+          "queryReplacement": "={{ [\n  $json.externalOfferId,\n  $json.chainId,\n  $json.chainName,\n  $json.productName,\n  $json.description,\n  $json.priceDkk,\n  $json.advertisedBeforePriceDkk,\n  $json.quantityFrom,\n  $json.quantityTo,\n  $json.originalUnit,\n  $json.piecesFrom,\n  $json.piecesTo,\n  $json.unitPriceWorstCase,\n  $json.unitPriceBestCase,\n  $json.normalizedUnit,\n  $json.validFrom,\n  $json.validUntil,\n  $json.imageUrl,\n  $json.hasQuantityRange,\n  JSON.stringify($json.rawPayload)\n] }}"
+        }
+      }
+    },
+    {
+      "id": "demo-6",
+      "name": "Sync Product Aliases",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH alias_candidates AS (\n    SELECT DISTINCT ON (alias_signature)\n        chain_id,\n        product_name,\n        description\n    FROM (\n        SELECT\n            id,\n            chain_id,\n            product_name,\n            description,\n            last_seen_at,\n\n            md5(\n                chain_id\n                || '|'\n                || lower(trim(product_name))\n                || '|'\n                || lower(trim(coalesce(description, '')))\n            ) AS alias_signature\n\n        FROM grocery_offers\n    ) candidates\n\n    ORDER BY\n        alias_signature,\n        last_seen_at DESC,\n        id DESC\n)\n\nINSERT INTO product_aliases (\n    chain_id,\n    source_name,\n    source_description\n)\nSELECT\n    chain_id,\n    product_name,\n    description\nFROM alias_candidates\n\nON CONFLICT (alias_signature)\nDO UPDATE SET\n    last_seen_at = now();\n\n\nINSERT INTO offer_product_matches (\n    offer_id,\n    alias_id\n)\nSELECT\n    go.id,\n    pa.id\n\nFROM grocery_offers go\n\nINNER JOIN product_aliases pa\n    ON pa.alias_signature = md5(\n        go.chain_id\n        || '|'\n        || lower(trim(go.product_name))\n        || '|'\n        || lower(trim(coalesce(go.description, '')))\n    )\n\nON CONFLICT (offer_id)\nDO UPDATE SET\n    alias_id = EXCLUDED.alias_id;",
+        "options": {}
+      },
+      "executeOnce": true
+    }
+  ],
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Create chain items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Upsert Grocery Offer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Grocery Offer": {
+      "main": [
+        [
+          {
+            "node": "Sync Product Aliases",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create chain items": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
